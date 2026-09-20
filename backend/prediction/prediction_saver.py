@@ -58,8 +58,8 @@ class PredictionSaver:
             # Create DataFrame from predictions
             df = pd.DataFrame(predictions)
             
-            # Ensure all required columns are present
-            df = self._ensure_required_columns(df)
+            # Ensure all required columns are present with category awareness
+            df = self._ensure_required_columns(df, category=category)
             
             # Validate predictions
             if not self._validate_predictions(df, symbol):
@@ -78,8 +78,8 @@ class PredictionSaver:
             logger.error(f"Error saving predictions for {symbol}: {str(e)}")
             return False
     
-    def _ensure_required_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Ensure all required columns are present in the DataFrame."""
+    def _ensure_required_columns(self, df: pd.DataFrame, category: str = 'us_stocks') -> pd.DataFrame:
+        """Ensure all required columns are present in the DataFrame with category-aware defaults."""
         required_columns = self.config.OUTPUT_COLUMNS
         
         # Add missing columns with default values
@@ -90,7 +90,7 @@ class PredictionSaver:
                 elif column == 'last_updated':
                     df[column] = datetime.now().isoformat()
                 elif column == 'currency':
-                    df[column] = 'USD'  # Default, will be updated based on category
+                    df[column] = 'INR' if category == 'ind_stocks' else 'USD'
                 elif column == 'current_price':
                     df[column] = 0.0
                 elif column in ['confidence', 'confidence_low', 'confidence_high', 'model_accuracy']:
@@ -99,6 +99,12 @@ class PredictionSaver:
                     df[column] = 0
                 else:
                     df[column] = ''
+        
+        # If currency is present but empty or NaN, populate with category currency
+        if 'currency' in df.columns:
+            target_currency = 'INR' if category == 'ind_stocks' else 'USD'
+            df['currency'] = df['currency'].fillna(target_currency)
+            df.loc[df['currency'] == '', 'currency'] = target_currency
         
         # Reorder columns to match required order
         df = df[required_columns]
@@ -174,6 +180,10 @@ class PredictionSaver:
                 logger.debug(f"No existing predictions found for {symbol}")
                 return None
             
+            if os.path.getsize(file_path) == 0:
+                logger.warning(f"Prediction file for {symbol} is empty.")
+                return None
+            
             df = pd.read_csv(file_path)
             logger.debug(f"Loaded {len(df)} existing predictions for {symbol}")
             return df
@@ -195,16 +205,20 @@ class PredictionSaver:
             True if successful, False otherwise
         """
         try:
+            if not new_predictions:
+                logger.warning(f"No new predictions to update for {symbol}")
+                return False
+                
             # Load existing predictions
             existing_df = self.load_predictions(symbol, category)
             
-            if existing_df is None:
+            if existing_df is None or existing_df.empty:
                 # No existing predictions, save new ones
                 return self.save_predictions(symbol, category, new_predictions)
             
             # Create DataFrame from new predictions
             new_df = pd.DataFrame(new_predictions)
-            new_df = self._ensure_required_columns(new_df)
+            new_df = self._ensure_required_columns(new_df, category=category)
             
             # Validate new predictions
             if not self._validate_predictions(new_df, symbol):
@@ -221,6 +235,9 @@ class PredictionSaver:
             else:
                 # If no horizon column, just append
                 combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            
+            # Re-normalize combined DataFrame for category currency & column order
+            combined_df = self._ensure_required_columns(combined_df, category=category)
             
             # Save combined predictions
             file_path = self._get_file_path(symbol, category)
@@ -268,6 +285,8 @@ class PredictionSaver:
             for csv_file in csv_files:
                 file_path = os.path.join(individual_files_dir, csv_file)
                 try:
+                    if os.path.getsize(file_path) == 0:
+                        continue
                     df = pd.read_csv(file_path)
                     total_predictions += len(df)
                     
