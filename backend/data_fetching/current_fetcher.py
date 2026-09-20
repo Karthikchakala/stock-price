@@ -18,12 +18,12 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from shared.utilities import Config, Constants, categorize_stock, get_currency_for_category
 
+import csv
 # Try to import pandas, fallback to CSV module if not available
 try:
     import pandas as pd
     PANDAS_AVAILABLE = True
 except ImportError:
-    import csv
     PANDAS_AVAILABLE = False
 
 # Configure logging
@@ -78,10 +78,14 @@ class CurrentFetcher:
     
     def _categorize_stock(self, symbol: str) -> str:
         """Categorize stock based on symbol suffix"""
+        if symbol:
+            symbol = symbol.strip().upper()
         return categorize_stock(symbol)
     
     def _fetch_from_finnhub(self, symbol: str) -> Tuple[float, str, None]:
         """Fetch stock price from Finnhub API (live data, no date)"""
+        if symbol:
+            symbol = symbol.strip().upper()
         if not self.finnhub_api_key:
             raise ValueError("Finnhub API key not configured")
         
@@ -123,6 +127,16 @@ class CurrentFetcher:
             Dict with metadata fields, or 'N/A' for missing fields
         """
         try:
+            if not symbol or not str(symbol).strip():
+                return {
+                    'sector': 'N/A',
+                    'market_cap': 'N/A',
+                    'headquarters': 'N/A',
+                    'exchange': 'N/A'
+                }
+            
+            symbol = symbol.strip().upper()
+            
             # Determine category and check permanent directory
             category = self._categorize_stock(symbol)
             
@@ -152,7 +166,10 @@ class CurrentFetcher:
             # Read metadata from index file
             if PANDAS_AVAILABLE:
                 df = pd.read_csv(index_path)
-                symbol_row = df[df['symbol'] == symbol]
+                if 'symbol' in df.columns:
+                    symbol_row = df[df['symbol'].dropna().astype(str).str.strip().str.upper() == symbol]
+                else:
+                    symbol_row = pd.DataFrame()
                 if not symbol_row.empty:
                     row = symbol_row.iloc[0]
                     return {
@@ -167,7 +184,8 @@ class CurrentFetcher:
                 with open(index_path, 'r', newline='', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        if row['symbol'] == symbol:
+                        row_symbol = next((v for k, v in row.items() if k and k.strip().lower() == 'symbol'), row.get('symbol', ''))
+                        if row_symbol and str(row_symbol).strip().upper() == symbol:
                             return {
                                 'sector': self._clean_metadata_value(row.get('sector', 'N/A')),
                                 'market_cap': self._clean_metadata_value(row.get('market_cap', 'N/A')),
@@ -213,6 +231,11 @@ class CurrentFetcher:
         Checks both US and Indian stock directories.
         """
         try:
+            if not symbol or not str(symbol).strip():
+                raise ValueError("Stock symbol is required")
+            
+            symbol = symbol.strip().upper()
+            
             # Determine category and check permanent directory
             category = self._categorize_stock(symbol)
             
@@ -236,7 +259,10 @@ class CurrentFetcher:
             company_name = symbol
             if PANDAS_AVAILABLE:
                 df = pd.read_csv(index_path)
-                symbol_row = df[df['symbol'] == symbol]
+                if 'symbol' in df.columns:
+                    symbol_row = df[df['symbol'].dropna().astype(str).str.strip().str.upper() == symbol]
+                else:
+                    symbol_row = pd.DataFrame()
                 if not symbol_row.empty:
                     company_name = symbol_row.iloc[0]['company_name']
             else:
@@ -245,8 +271,9 @@ class CurrentFetcher:
                 with open(index_path, 'r', newline='', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        if row['symbol'] == symbol:
-                            company_name = row['company_name']
+                        row_symbol = next((v for k, v in row.items() if k and k.strip().lower() == 'symbol'), row.get('symbol', ''))
+                        if row_symbol and str(row_symbol).strip().upper() == symbol:
+                            company_name = row.get('company_name', symbol)
                             break
             
             # Check individual file (use absolute path from config)
@@ -311,6 +338,10 @@ class CurrentFetcher:
     
     def _is_cache_valid(self, symbol: str) -> bool:
         """Check if cached data for symbol is still valid"""
+        if not symbol or not str(symbol).strip():
+            return False
+        
+        symbol = symbol.strip().upper()
         if symbol not in self.cache:
             return False
         
@@ -419,7 +450,8 @@ class CurrentFetcher:
     
     def save_to_csv(self, data: Dict):
         """Save stock data to individual files only (latest_prices.csv disabled)"""
-        symbol = data['symbol']
+        symbol = str(data.get('symbol', '')).strip().upper()
+        data['symbol'] = symbol
         category = self._categorize_stock(symbol)
         
         # Only save to individual files, not latest_prices.csv
@@ -433,9 +465,11 @@ class CurrentFetcher:
     
     def _save_with_pandas(self, data: Dict, csv_path: str, symbol: str, category: str):
         """Save using pandas"""
+        if symbol:
+            symbol = symbol.strip().upper()
         # Create DataFrame with the new data
         new_row = pd.DataFrame([{
-            'symbol': data['symbol'],
+            'symbol': symbol,
             'price': data['price'],
             'timestamp': data['timestamp'],
             'source': data['source'],
@@ -450,8 +484,9 @@ class CurrentFetcher:
         # Read existing data if file exists
         if os.path.exists(csv_path):
             existing_df = pd.read_csv(csv_path)
-            # Remove any existing entry for this symbol
-            existing_df = existing_df[existing_df['symbol'] != symbol]
+            # Remove any existing entry for this symbol (case-insensitive)
+            if 'symbol' in existing_df.columns:
+                existing_df = existing_df[existing_df['symbol'].dropna().astype(str).str.strip().str.upper() != symbol]
             # Append new data
             updated_df = pd.concat([existing_df, new_row], ignore_index=True)
         else:
@@ -472,16 +507,21 @@ class CurrentFetcher:
     
     def _save_with_csv_module(self, data: Dict, csv_path: str, symbol: str, category: str):
         """Save using built-in csv module (fallback)"""
+        if symbol:
+            symbol = symbol.strip().upper()
         # Read existing data
         existing_data = []
         if os.path.exists(csv_path):
             with open(csv_path, 'r', newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
-                existing_data = [row for row in reader if row['symbol'] != symbol]
+                for row in reader:
+                    row_symbol = next((v for k, v in row.items() if k and k.strip().lower() == 'symbol'), row.get('symbol', ''))
+                    if str(row_symbol).strip().upper() != symbol:
+                        existing_data.append(row)
         
         # Add new data
         existing_data.append({
-            'symbol': data['symbol'],
+            'symbol': symbol,
             'price': str(data['price']),
             'timestamp': data['timestamp'],
             'source': data['source'],
@@ -521,7 +561,7 @@ class CurrentFetcher:
             if os.path.exists(csv_path):
                 if PANDAS_AVAILABLE:
                     df = pd.read_csv(csv_path)
-                    symbols = df['symbol'].unique().tolist()
+                    symbols = [str(s).strip().upper() for s in df['symbol'].dropna().unique().tolist() if str(s).strip()]
                     
                     # Try to get company info from permanent index
                     permanent_index_path = os.path.join(self.config.permanent_dir, category, f'index_{category}.csv')
@@ -530,7 +570,9 @@ class CurrentFetcher:
                     if os.path.exists(permanent_index_path):
                         try:
                             permanent_df = pd.read_csv(permanent_index_path)
-                            company_info = permanent_df.set_index('symbol').to_dict('index')
+                            if 'symbol' in permanent_df.columns:
+                                permanent_df['symbol'] = permanent_df['symbol'].dropna().astype(str).str.strip().str.upper()
+                                company_info = permanent_df.set_index('symbol').to_dict('index')
                         except Exception as e:
                             logger.warning(f"Could not read permanent index for {category}: {e}")
                     
@@ -564,7 +606,9 @@ class CurrentFetcher:
                     with open(csv_path, 'r', newline='', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
                         for row in reader:
-                            symbols.add(row['symbol'])
+                            row_symbol = next((v for k, v in row.items() if k and k.strip().lower() == 'symbol'), row.get('symbol', ''))
+                            if row_symbol and str(row_symbol).strip():
+                                symbols.add(str(row_symbol).strip().upper())
                     
                     # Add each symbol to dynamic index (preserves existing stocks)
                     for symbol in symbols:
@@ -606,7 +650,7 @@ class CurrentFetcher:
             # Get all individual files in the directory
             for filename in os.listdir(individual_dir):
                 if filename.endswith('.csv'):
-                    symbol = filename[:-4]  # Remove .csv extension
+                    symbol = filename[:-4].strip().upper()  # Remove .csv extension and normalize
                     file_path = os.path.join(individual_dir, filename)
                     
                     try:
@@ -651,6 +695,10 @@ class CurrentFetcher:
             Dict with additional data fields
         """
         try:
+            if not symbol or not str(symbol).strip():
+                return {}
+            
+            symbol = symbol.strip().upper()
             category = self._categorize_stock(symbol)
             
             # Try latest directory first (2025 data)
@@ -725,6 +773,11 @@ class CurrentFetcher:
         """
         try:
             from datetime import datetime
+            
+            if not symbol or not str(symbol).strip():
+                return
+            
+            symbol = symbol.strip().upper()
             
             # Determine category if not provided
             if not category:
