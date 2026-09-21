@@ -11,7 +11,10 @@ Contains functionality for:
 - Multiple API fallbacks (yfinance, Finnhub, Alpha Vantage)
 """
 
-from current_fetcher import CurrentFetcher, LiveFetcher
+try:
+    from .current_fetcher import CurrentFetcher, LiveFetcher
+except ImportError:
+    from current_fetcher import CurrentFetcher, LiveFetcher
 
 # For backward compatibility
 __all__ = ['CurrentFetcher', 'LiveFetcher']
